@@ -16,7 +16,7 @@ A fun and interactive **Flutter-based word puzzle game** where players compete t
 ## 🛠️ Tech Stack
 - **Framework:** Flutter  
 - **Language:** Dart  
-- **State Management:** Provider / GetX *(as per your setup)*  
+- **State Management:** Provider / GetX  
 - **Version Control:** Git + GitHub  
 
 ---
