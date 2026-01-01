@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>WordHunt — Web</title>
+<style>
+  :root { --bg:#081229; --panel:#0b2540; --accent:#1ea7ff; --muted:#98b6d6; }
+  html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial;}
+  body{display:flex;align-items:center;justify-content:center;background:
+    radial-gradient(ellipse at 10% 10%, rgba(255,255,255,0.02), transparent 6%),
+    linear-gradient(180deg, #031029 0%, #021426 100%);color:white;}
+  .wrapper{width:100%;max-width:960px;padding:18px;box-sizing:border-box;}
+  header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;}
+  h1{margin:0;font-size:20px;color:var(--accent)}
+  .panel{background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent);border-radius:12px;padding:12px;box-shadow:0 6px 20px rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.03)}
+  #ui{display:flex;gap:8px;align-items:center}
+  button{background:var(--accent);border:none;padding:8px 12px;border-radius:8px;color:#012233;font-weight:600;cursor:pointer}
+  button.ghost{background:transparent;color:var(--muted);border:1px solid rgba(255,255,255,0.04)}
+  .row{display:flex;gap:8px;align-items:center}
+  #gameCanvas{display:block;background:transparent;border-radius:10px;width:100%;height:600px;max-height:70vh;box-shadow:inset 0 0 40px rgba(0,0,0,0.6)}
+  .hud{display:flex;justify-content:space-between;margin-top:10px;gap:8px;align-items:center}
+  .hud .box{background:rgba(255,255,255,0.03);padding:8px 12px;border-radius:8px;font-size:14px}
+  .center-note{margin-top:8px;color:var(--muted);font-size:13px}
+  footer{margin-top:10px;color:var(--muted);font-size:13px}
+  @media (max-width:640px){ #gameCanvas{height:55vh} h1{font-size:18px}}
+</style>
+</head>
+<body>
+  <div class="wrapper">
+    <header>
+      <h1>WordHunt — Web</h1>
+      <div id="ui" class="panel">
+        <div class="row">
+          <label for="difficulty" style="color:var(--muted);margin-right:6px">Difficulty</label>
+          <select id="difficulty" aria-label="difficulty">
+            <option value="easy">Easy (3:00)</option>
+            <option value="medium" selected>Medium (2:00)</option>
+            <option value="hard">Hard (1:30)</option>
+          </select>
+        </div>
+        <button id="startBtn">Start</button>
+        <button id="pauseBtn" class="ghost">Pause</button>
+      </div>
+    </header>
+
+    <div class="panel">
+      <canvas id="gameCanvas" width="900" height="600"></canvas>
+      <div class="hud">
+        <div class="box">Score: <span id="score">0</span></div>
+        <div class="box">Time: <span id="time">02:00</span></div>
+        <div class="box">Lives: <span id="lives">3</span></div>
+        <div class="box">Level: <span id="level">1</span></div>
+      </div>
+      <div class="center-note">Use A/D or ←/→ to move. Space or click/tap to shoot. Words fall — shoot letters to complete them.</div>
+    </div>
+
+    <footer style="text-align:center">
+      Converted from a Flutter UI game — simplified web version.
+    </footer>
+  </div>
+
+<script>
+(() => {
+  // --- Config & state ---
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  let cw = canvas.width, ch = canvas.height;
+
+  const scoreEl = document.getElementById('score');
+  const timeEl = document.getElementById('time');
+  const livesEl = document.getElementById('lives');
+  const levelEl = document.getElementById('level');
+  const startBtn = document.getElementById('startBtn');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const difficultySel = document.getElementById('difficulty');
+
+  // gameplay state
+  let running = false;
+  let paused = false;
+  let lastTs = 0;
+  let spawnTimer = 0;
+  let bullets = [];
+  let letters = [];
+  let stars = [];
+  let score = 0;
+  let lives = 3;
+  let level = 1;
+  let totalTime = 120; // seconds; updated by difficulty
+  let timeLeft = totalTime;
+  let keys = {};
+  let mouseDown = false;
+
+  // word bank (small sample)
+  const words = ["CODE","FLAME","WORD","HUNT","GAME","DART","HTML","JUMP","SHOOT","STAR","BOMB","LEVEL","SCORE","TIME"];
+
+  // choose difficulty
+  function setDifficulty(v){
+    if(v==='easy'){ totalTime = 180; spawnRate=1.2; }
+    else if(v==='medium'){ totalTime = 120; spawnRate=0.9; }
+    else { totalTime = 90; spawnRate=0.6; }
+    timeLeft = totalTime;
+  }
+
+  // spawn rate in seconds — tweaked per difficulty
+  let spawnRate = 0.9;
+  setDifficulty(difficultySel.value);
+
+  // player
+  const player = {
+    w: 70,
+    h: 20,
+    x: cw/2 - 35,
+    y: ch - 60,
+    speed: 420,
+    color: '#2fe0a1'
+  };
+
+  // responsive canvas
+  function resizeCanvas(){
+    const rect = canvas.getBoundingClientRect();
+    cw = Math.floor(rect.width);
+    ch = Math.floor(rect.height);
+    canvas.width = cw;
+    canvas.height = ch;
+    player.y = ch - 60;
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  // utility
+  function rand(min,max){ return Math.random()*(max-min)+min; }
+  function choose(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+
+  // stars background
+  for(let i=0;i<80;i++){
+    stars.push({x:Math.random()*cw, y:Math.random()*ch, s:Math.random()*2+0.5});
+  }
+
+  // spawn a falling word as set of letters
+  function spawnWord(){
+    const w = choose(words);
+    const x0 = rand(40, cw-160);
+    const speed = rand(50, 120) + Math.min(level*10, 100);
+    // create letters spaced horizontally as small targets
+    for(let i=0;i<w.length;i++){
+      letters.push({
+        char: w[i],
+        x: x0 + i*28,
+        y: -20 - i*6,
+        speed,
+        hit: false,
+        w:22,
+        h:26,
+        id: Math.random().toString(36).slice(2,9)
+      });
+    }
+  }
+
+  // input
+  window.addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; if(e.key===' '){ e.preventDefault(); }});
+  window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+  canvas.addEventListener('mousedown', e => { mouseDown = true; shoot(); });
+  canvas.addEventListener('mouseup', e => { mouseDown = false; });
+  canvas.addEventListener('touchstart', e => { mouseDown = true; shoot(); });
+  canvas.addEventListener('touchend', e => { mouseDown = false; });
+
+  // shooting
+  let lastShot = 0;
+  const shotCooldown = 220; // ms
+  function shoot(){
+    const now = performance.now();
+    if(now - lastShot < shotCooldown) return;
+    lastShot = now;
+    bullets.push({x: player.x + player.w/2, y: player.y - 6, vx:0, vy:-540, r:4});
+  }
+
+  // game loop
+  function update(dt){
+    if(!running || paused) return;
+    // time
+    timeLeft -= dt;
+    if(timeLeft <= 0){
+      endGame();
+      return;
+    }
+
+    // spawn words
+    spawnTimer += dt;
+    if(spawnTimer >= spawnRate){
+      spawnTimer = 0;
+      spawnWord();
+    }
+
+    // moving player
+    let move = 0;
+    if(keys['a'] || keys['arrowleft']) move -= 1;
+    if(keys['d'] || keys['arrowright']) move += 1;
+    player.x += move * player.speed * dt;
+    if(player.x < 6) player.x = 6;
+    if(player.x + player.w > cw - 6) player.x = cw - 6 - player.w;
+
+    // mouse hold to shoot
+    if(mouseDown) shoot();
+
+    // bullets update
+    for(let i=bullets.length-1;i>=0;i--){
+      const b = bullets[i];
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      // remove offscreen
+      if(b.y < -10) bullets.splice(i,1);
+    }
+
+    // letters update
+    for(let i=letters.length-1;i>=0;i--){
+      const L = letters[i];
+      L.y += L.speed * dt;
+      // collision with player (if a letter reaches bottom)
+      if(L.y > ch - 80){
+        // if not yet hit, counts as damage
+        if(!L.hit){
+          // Lose life and remove entire word pieces sharing id nearby
+          lives -= 0.25; // fractional because letters spawn many for same word
+          if(lives <= 0){ endGame(); return; }
+        }
+        letters.splice(i,1);
+        continue;
+      }
+      // bullet collisions
+      for(let j=bullets.length-1;j>=0;j--){
+        const b = bullets[j];
+        if(b.x > L.x && b.x < L.x + L.w && b.y > L.y && b.y < L.y + L.h){
+          // hit
+          L.hit = true;
+          bullets.splice(j,1);
+          score += 10;
+          // mark letter removed visually; remove letter
+          letters.splice(i,1);
+          break;
+        }
+      }
+    }
+
+    // level up lightly by score
+    level = 1 + Math.floor(score / 200);
+    // update UI
+    scoreEl.textContent = Math.floor(score);
+    timeEl.textContent = formatTime(Math.max(0, Math.floor(timeLeft)));
+    livesEl.textContent = Math.ceil(Math.max(0, lives));
+    levelEl.textContent = level;
+  }
+
+  function formatTime(sec){
+    const m = Math.floor(sec/60).toString().padStart(2,'0');
+    const s = (sec%60).toString().padStart(2,'0');
+    return `${m}:${s}`;
+  }
+
+  function draw(){
+    // clear
+    ctx.clearRect(0,0,cw,ch);
+    // background gradient
+    const g = ctx.createLinearGradient(0,0,0,ch);
+    g.addColorStop(0,'#031029');
+    g.addColorStop(1,'#021426');
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,cw,ch);
+
+    // stars
+    for(let s of stars){
+      s.y += 8 * 0.01;
+      if(s.y > ch) s.y = 0;
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.fillRect(s.x, s.y, s.s, s.s);
+    }
+
+    // letters
+    ctx.font = 'bold 18px system-ui, Arial';
+    ctx.textBaseline = 'top';
+    for(let L of letters){
+      ctx.fillStyle = L.hit ? 'rgba(255,255,255,0.2)' : '#fff';
+      ctx.fillRect(L.x-2, L.y-2, L.w+4, L.h+4);
+      ctx.fillStyle = '#001f33';
+      ctx.fillRect(L.x, L.y, L.w, L.h);
+      ctx.fillStyle = '#ffd';
+      ctx.fillText(L.char, L.x + 4, L.y + 2);
+    }
+
+    // bullets
+    for(let b of bullets){
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r, 0, Math.PI*2);
+      ctx.fillStyle = '#ffd166';
+      ctx.fill();
+    }
+
+    // player
+    ctx.fillStyle = player.color;
+    roundRect(ctx, player.x, player.y, player.w, player.h, 8, true, false);
+    // gun muzzle
+    ctx.fillStyle = '#0b1e24';
+    ctx.fillRect(player.x + player.w/2 - 6, player.y - 8, 12, 8);
+
+    // HUD overlay (small)
+    ctx.fillStyle = 'rgba(0,0,0,0.12)';
+    ctx.fillRect(8,8,160,48);
+    ctx.fillStyle = '#fff';
+    ctx.font = '12px system-ui';
+    ctx.fillText('Score: '+Math.floor(score), 16, 16);
+    ctx.fillText('Time: '+formatTime(Math.max(0, Math.floor(timeLeft))), 16, 34);
+  }
+
+  function roundRect(ctx,x,y,w,h,r,fill,stroke){
+    if(r===undefined) r=5;
+    ctx.beginPath();
+    ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y,x+w,y+h,r);
+    ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r);
+    ctx.arcTo(x,y,x+w,y,r);
+    ctx.closePath();
+    if(fill) ctx.fill();
+    if(stroke) ctx.stroke();
+  }
+
+  function gameLoop(ts){
+    if(!lastTs) lastTs = ts;
+    const dt = (ts - lastTs)/1000;
+    lastTs = ts;
+    update(dt);
+    draw();
+    if(running) requestAnimationFrame(gameLoop);
+  }
+
+  // controls for start/pause/reset
+  startBtn.addEventListener('click', () => {
+    if(!running) startGame();
+    else resetGame();
+  });
+
+  pauseBtn.addEventListener('click', () => {
+    if(!running) return;
+    paused = !paused;
+    pauseBtn.textContent = paused ? 'Resume' : 'Pause';
+  });
+
+  difficultySel.addEventListener('change', (e)=>{
+    setDifficulty(e.target.value);
+  });
+
+  function startGame(){
+    // reset
+    running = true;
+    paused = false;
+    bullets = [];
+    letters = [];
+    spawnTimer = 0;
+    score = 0;
+    lives = 3;
+    level = 1;
+    timeLeft = totalTime;
+    lastTs = 0;
+    startBtn.textContent = 'Restart';
+    pauseBtn.textContent = 'Pause';
+    requestAnimationFrame(gameLoop);
+  }
+
+  function endGame(){
+    running = false;
+    paused = false;
+    alert('Game over! Your score: ' + Math.floor(score));
+    startBtn.textContent = 'Start';
+  }
+
+  function resetGame(){
+    running = false;
+    paused = false;
+    bullets = [];
+    letters = [];
+    score = 0;
+    lives = 3;
+    level = 1;
+    timeLeft = totalTime;
+    startBtn.textContent = 'Start';
+    scoreEl.textContent = '0';
+    timeEl.textContent = formatTime(totalTime);
+    livesEl.textContent = '3';
+    levelEl.textContent = '1';
+    draw();
+  }
+
+  // initial draw
+  resetGame();
+
+})();
+</script>
+</body>
+</html>

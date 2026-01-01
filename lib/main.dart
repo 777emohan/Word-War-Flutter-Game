@@ -27,6 +27,7 @@ class WordHuntApp extends StatelessWidget {
         '/leaderboard': (_) => const LeaderboardScreen(),
         '/settings': (_) => const SettingsScreen(),
         '/about': (_) => const AboutScreen(),
+        '/statistics': (_) => const StatisticsScreen(),
       },
     );
   }
@@ -202,12 +203,20 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               },
             ),
             ListTile(
+              leading: const Icon(Icons.bar_chart),
+              title: const Text('Statistics'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.pushNamed(context, '/statistics');
+              },
+            ),
+            ListTile(
               leading: const Icon(Icons.person),
               title: const Text('Profile'),
               onTap: () async {
                 Navigator.pop(context);
                 await Navigator.pushNamed(context, '/profile');
-                _loadPlayerInfo(); // Reload after returning from profile
+                _loadPlayerInfo();
               },
             ),
             ListTile(
@@ -572,7 +581,7 @@ class _FallingLetter {
 }
 
 // -------------
-// 3. Game Screen with profile saving and timeout
+// 3. Game Screen with ENHANCED FEATURES
 // -------------
 
 class GameScreen extends StatefulWidget {
@@ -583,7 +592,7 @@ class GameScreen extends StatefulWidget {
   State<GameScreen> createState() => _GameScreenState();
 }
 
-class _GameScreenState extends State<GameScreen> {
+class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   final Random _rnd = Random();
 
   Timer? _spawnTimer;
@@ -612,6 +621,9 @@ class _GameScreenState extends State<GameScreen> {
   final double _gunHeightPx = 24;
 
   final List<_Bullet> _bullets = [];
+  
+  // NEW: Particle effects
+  final List<_Particle> _particles = [];
 
   late int _spawnIntervalMs;
   late double _letterFallSpeedNorm;
@@ -628,24 +640,56 @@ class _GameScreenState extends State<GameScreen> {
   // Timer variables
   int _remainingTime = 0;
   bool _gameEnded = false;
+  
+  // NEW: Combo system
+  int _combo = 0;
+  int _maxCombo = 0;
+  
+  // NEW: Statistics tracking
+  int _totalBulletsFired = 0;
+  int _totalLettersHit = 0;
+  int _totalWordsCompleted = 0;
+  
+  // NEW: Screen shake effect
+  double _shakeOffsetX = 0;
+  double _shakeOffsetY = 0;
+  
+  // NEW: Gun recoil animation
+  late AnimationController _gunRecoilController;
+  late Animation<double> _gunRecoilAnimation;
+  
+  // NEW: FocusNode properly managed
+  late FocusNode _focusNode;
 
   @override
   void initState() {
     super.initState();
+    _focusNode = FocusNode()..requestFocus();
     _chooseDifficultySettings();
     _targetWord = _wordBank[_rnd.nextInt(_wordBank.length)];
     _initStars();
     _loadScores();
+    _initGunRecoilAnimation();
     _startSpawnTimer();
     _startGameLoop();
     _startTimeoutTimer();
+  }
+  
+  void _initGunRecoilAnimation() {
+    _gunRecoilController = AnimationController(
+      duration: const Duration(milliseconds: 100),
+      vsync: this,
+    );
+    _gunRecoilAnimation = Tween<double>(begin: 0, end: -8).animate(
+      CurvedAnimation(parent: _gunRecoilController, curve: Curves.easeOut),
+    );
   }
 
   Future<void> _loadScores() async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     if (mounted) {
       setState(() {
-        _score = 0; // Always start with 0
+        _score = 0;
         _highScore = prefs.getInt('highScore') ?? 0;
         _currentPlayerName = prefs.getString('currentPlayerName') ?? 'Player';
       });
@@ -655,17 +699,31 @@ class _GameScreenState extends State<GameScreen> {
   Future<void> _saveGameProfile() async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     
-    // Save current game data
     await prefs.setString('currentPlayerName', _currentPlayerName);
     await prefs.setInt('currentGameScore', _score);
     
-    // Update high score if current score is better
+    // Update high score
     if (_score > _highScore) {
       await prefs.setInt('highScore', _score);
       await prefs.setString('highScoreHolder', _currentPlayerName);
       setState(() {
         _highScore = _score;
       });
+    }
+    
+    // NEW: Save statistics
+    final totalWords = prefs.getInt('totalWordsCompleted') ?? 0;
+    await prefs.setInt('totalWordsCompleted', totalWords + _totalWordsCompleted);
+    
+    final totalBullets = prefs.getInt('totalBulletsFired') ?? 0;
+    await prefs.setInt('totalBulletsFired', totalBullets + _totalBulletsFired);
+    
+    final totalHits = prefs.getInt('totalLettersHit') ?? 0;
+    await prefs.setInt('totalLettersHit', totalHits + _totalLettersHit);
+    
+    final savedMaxCombo = prefs.getInt('maxCombo') ?? 0;
+    if (_maxCombo > savedMaxCombo) {
+      await prefs.setInt('maxCombo', _maxCombo);
     }
   }
 
@@ -684,22 +742,22 @@ class _GameScreenState extends State<GameScreen> {
         _spawnIntervalMs = 1200;
         _letterFallSpeedNorm = 0.004;
         _bulletSpeedNorm = 0.018;
-        _bombSpawnChance = 12; // Less bombs (1 in 12 chance)
-        _timeoutSeconds = 180; // 3 minutes (180 seconds)
+        _bombSpawnChance = 12;
+        _timeoutSeconds = 180;
         break;
       case Difficulty.medium:
         _spawnIntervalMs = 900;
         _letterFallSpeedNorm = 0.007;
         _bulletSpeedNorm = 0.022;
-        _bombSpawnChance = 6; // More bombs (1 in 6 chance)
-        _timeoutSeconds = 120; // 2 minutes (120 seconds)
+        _bombSpawnChance = 6;
+        _timeoutSeconds = 120;
         break;
       case Difficulty.hard:
         _spawnIntervalMs = 650;
         _letterFallSpeedNorm = 0.010;
         _bulletSpeedNorm = 0.028;
-        _bombSpawnChance = 3; // Many bombs (1 in 3 chance)
-        _timeoutSeconds = 90; // 1:30 minutes (90 seconds)
+        _bombSpawnChance = 3;
+        _timeoutSeconds = 90;
         break;
     }
     _remainingTime = _timeoutSeconds;
@@ -769,6 +827,8 @@ class _GameScreenState extends State<GameScreen> {
             const SizedBox(height: 10),
             Text('Final Score: $_score',
                 style: const TextStyle(color: Colors.yellow, fontSize: 18)),
+            Text('Max Combo: $_maxCombo',
+                style: const TextStyle(color: Colors.cyan, fontSize: 16)),
             Text('High Score: $_highScore',
                 style: TextStyle(
                     color: _score >= _highScore ? Colors.green : Colors.orange,
@@ -806,7 +866,9 @@ class _GameScreenState extends State<GameScreen> {
       _letters.clear();
       _bombs.clear();
       _bullets.clear();
+      _particles.clear();
       _score = 0;
+      _combo = 0;
       _remainingTime = _timeoutSeconds;
     });
     _startSpawnTimer();
@@ -853,6 +915,8 @@ class _GameScreenState extends State<GameScreen> {
   void _update() {
     if (!mounted || _gameEnded) return;
 
+    bool needsRebuild = false;
+
     // Update stars
     for (var s in _stars) {
       s.y += s.speed * (_loopMs);
@@ -876,6 +940,25 @@ class _GameScreenState extends State<GameScreen> {
     for (var b in _bullets) {
       b.y -= _bulletSpeedNorm * (_loopMs / 16);
     }
+    
+    // NEW: Update particles
+    for (var p in _particles) {
+      p.x += p.vx * (_loopMs / 16);
+      p.y += p.vy * (_loopMs / 16);
+      p.life -= 0.02;
+      p.vy += 0.0005; // Gravity
+    }
+    _particles.removeWhere((p) => p.life <= 0);
+    
+    // NEW: Update screen shake
+    if (_shakeOffsetX.abs() > 0.1 || _shakeOffsetY.abs() > 0.1) {
+      _shakeOffsetX *= 0.8;
+      _shakeOffsetY *= 0.8;
+      needsRebuild = true;
+    } else {
+      _shakeOffsetX = 0;
+      _shakeOffsetY = 0;
+    }
 
     // Remove off-screen
     _letters.removeWhere((_FallingLetter l) => l.y > 1.05);
@@ -895,14 +978,26 @@ class _GameScreenState extends State<GameScreen> {
         if (dx < horizThreshold && dy < vertThreshold) {
           bulletsToRemove.add(b);
           lettersToRemove.add(l);
+          
+          // NEW: Create particle explosion
+          _createParticleExplosion(l.x, l.y, l.color);
+          
+          _totalLettersHit++;
+          
           if (_progressIndex < _targetWord.length &&
               l.char == _targetWord[_progressIndex]) {
             _progressIndex++;
+            _combo++; // NEW: Increase combo
+            if (_combo > _maxCombo) _maxCombo = _combo;
+            
             if (_progressIndex >= _targetWord.length) {
               _score++;
+              _totalWordsCompleted++;
               _saveScores();
               _onWordCompleted();
             }
+          } else {
+            _combo = 0; // NEW: Reset combo on wrong letter
           }
           break;
         }
@@ -917,6 +1012,11 @@ class _GameScreenState extends State<GameScreen> {
         const double bombHitThreshold = 0.06;
         if (dx < bombHitThreshold && dy < bombHitThreshold) {
           bulletsToRemove.add(b);
+          
+          // NEW: Create red explosion and screen shake
+          _createParticleExplosion(bomb.x, bomb.y, Colors.red);
+          _triggerScreenShake();
+          
           _endGameOnBombHit();
           break;
         }
@@ -926,11 +1026,36 @@ class _GameScreenState extends State<GameScreen> {
     _letters.removeWhere((_FallingLetter l) => lettersToRemove.contains(l));
     _bullets.removeWhere((_Bullet b) => bulletsToRemove.contains(b));
 
-    setState(() {});
+    if (needsRebuild || _letters.isNotEmpty || _bombs.isNotEmpty || _bullets.isNotEmpty || _particles.isNotEmpty) {
+      setState(() {});
+    }
+  }
+  
+  // NEW: Create particle explosion effect
+  void _createParticleExplosion(double x, double y, Color color) {
+    for (int i = 0; i < 15; i++) {
+      final angle = (i / 15) * 2 * pi;
+      final speed = 0.002 + _rnd.nextDouble() * 0.004;
+      _particles.add(_Particle(
+        x: x,
+        y: y,
+        vx: cos(angle) * speed,
+        vy: sin(angle) * speed,
+        color: color,
+        life: 1.0,
+      ));
+    }
+  }
+  
+  // NEW: Trigger screen shake effect
+  void _triggerScreenShake() {
+    _shakeOffsetX = (_rnd.nextDouble() - 0.5) * 20;
+    _shakeOffsetY = (_rnd.nextDouble() - 0.5) * 20;
   }
 
   void _onWordCompleted() {
     if (_gameEnded) return;
+    _gameEnded = true; // FIXED: Set game ended flag
     
     _spawnTimer?.cancel();
     _gameLoopTimer?.cancel();
@@ -951,6 +1076,8 @@ class _GameScreenState extends State<GameScreen> {
             const SizedBox(height: 10),
             Text('Score: $_score',
                 style: const TextStyle(color: Colors.yellow, fontSize: 18)),
+            Text('Combo: $_combo',
+                style: const TextStyle(color: Colors.cyan, fontSize: 16)),
             Text('High Score: $_highScore',
                 style: const TextStyle(color: Colors.orange, fontSize: 16)),
             Text('Time remaining: ${_remainingTime}s',
@@ -961,11 +1088,15 @@ class _GameScreenState extends State<GameScreen> {
           TextButton(
             onPressed: () {
               Navigator.of(context).pop();
-              _targetWord = _wordBank[_rnd.nextInt(_wordBank.length)];
-              _progressIndex = 0;
-              _letters.clear();
-              _bombs.clear();
-              _bullets.clear();
+              setState(() {
+                _gameEnded = false;
+                _targetWord = _wordBank[_rnd.nextInt(_wordBank.length)];
+                _progressIndex = 0;
+                _letters.clear();
+                _bombs.clear();
+                _bullets.clear();
+                _particles.clear();
+              });
               _startSpawnTimer();
               _startGameLoop();
               _startTimeoutTimer();
@@ -1008,6 +1139,8 @@ class _GameScreenState extends State<GameScreen> {
             const SizedBox(height: 10),
             Text('Final Score: $_score',
                 style: const TextStyle(color: Colors.yellow, fontSize: 18)),
+            Text('Max Combo: $_maxCombo',
+                style: const TextStyle(color: Colors.cyan, fontSize: 16)),
             Text('High Score: $_highScore',
                 style: TextStyle(
                     color: _score >= _highScore ? Colors.green : Colors.orange,
@@ -1044,9 +1177,15 @@ class _GameScreenState extends State<GameScreen> {
   }
 
   void _fireBullet() {
+    // TODO: Play shoot sound if settings allow
+    
     final double bulletX = _gunX;
     final double bulletY = 1.0 - (_gunHeightPx / screenH) - 0.02;
     _bullets.add(_Bullet(x: bulletX, y: bulletY));
+    _totalBulletsFired++;
+    
+    // NEW: Trigger gun recoil animation
+    _gunRecoilController.forward(from: 0);
   }
 
   void _handleKey(KeyEvent event) {
@@ -1068,12 +1207,21 @@ class _GameScreenState extends State<GameScreen> {
     if (_remainingTime > 10) return Colors.orange;
     return Colors.red;
   }
+  
+  Color _getComboColor() {
+    if (_combo >= 10) return Colors.purple;
+    if (_combo >= 5) return Colors.orange;
+    if (_combo >= 3) return Colors.yellow;
+    return Colors.cyan;
+  }
 
   @override
   void dispose() {
     _spawnTimer?.cancel();
     _gameLoopTimer?.cancel();
     _timeoutTimer?.cancel();
+    _gunRecoilController.dispose();
+    _focusNode.dispose(); // FIXED: Properly dispose focus node
     super.dispose();
   }
 
@@ -1083,7 +1231,7 @@ class _GameScreenState extends State<GameScreen> {
     screenH = MediaQuery.of(context).size.height;
 
     return KeyboardListener(
-      focusNode: FocusNode()..requestFocus(),
+      focusNode: _focusNode, // FIXED: Use managed focus node
       autofocus: true,
       onKeyEvent: _handleKey,
       child: Scaffold(
@@ -1123,207 +1271,253 @@ class _GameScreenState extends State<GameScreen> {
             onTapDown: (TapDownDetails details) {
               _fireBullet();
             },
-            child: Stack(
-              children: <Widget>[
-                // Stars background
-                ..._stars.map<Widget>((_Star s) {
-                  return Positioned(
-                    left: s.x * screenW,
-                    top: s.y * screenH,
-                    child: Container(
-                      width: 2,
-                      height: 2,
-                      decoration: const BoxDecoration(color: Colors.white),
-                    ),
-                  );
-                }),
+            child: Transform.translate(
+              offset: Offset(_shakeOffsetX, _shakeOffsetY), // NEW: Screen shake
+              child: Stack(
+                children: <Widget>[
+                  // Stars background
+                  ..._stars.map<Widget>((_Star s) {
+                    return Positioned(
+                      left: s.x * screenW,
+                      top: s.y * screenH,
+                      child: Container(
+                        width: 2,
+                        height: 2,
+                        decoration: const BoxDecoration(color: Colors.white),
+                      ),
+                    );
+                  }),
 
-                // Target word and progress
-                Positioned(
-                  top: 18,
-                  left: 0,
-                  right: 0,
-                  child: Center(
-                    child: RichText(
-                      text: TextSpan(children: <TextSpan>[
-                        const TextSpan(
-                            text: 'Target: ',
-                            style:
-                                TextStyle(color: Colors.white70, fontSize: 18)),
-                        TextSpan(
-                            text: _targetWord,
-                            style: const TextStyle(
-                                color: Colors.yellow,
-                                fontSize: 22,
-                                fontWeight: FontWeight.bold)),
-                      ]),
+                  // Target word and progress
+                  Positioned(
+                    top: 18,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: RichText(
+                        text: TextSpan(children: <TextSpan>[
+                          const TextSpan(
+                              text: 'Target: ',
+                              style:
+                                  TextStyle(color: Colors.white70, fontSize: 18)),
+                          TextSpan(
+                              text: _targetWord,
+                              style: const TextStyle(
+                                  color: Colors.yellow,
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.bold)),
+                        ]),
+                      ),
                     ),
                   ),
-                ),
-                Positioned(
-                  top: 56,
-                  left: 0,
-                  right: 0,
-                  child: Center(
-                    child: Text(
-                      _buildProgressString(),
-                      style: const TextStyle(
-                          color: Colors.greenAccent,
-                          fontSize: 20,
-                          letterSpacing: 2),
-                    ),
-                  ),
-                ),
-
-                // Scores and Timer
-                Positioned(
-                  top: 10,
-                  left: 12,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      Text(
-                        'Score: $_score',
+                  Positioned(
+                    top: 56,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: Text(
+                        _buildProgressString(),
                         style: const TextStyle(
-                            color: Colors.white70, fontSize: 18),
+                            color: Colors.greenAccent,
+                            fontSize: 20,
+                            letterSpacing: 2),
                       ),
-                      Text(
-                        'High Score: $_highScore',
-                        style: const TextStyle(
-                            color: Colors.white70, fontSize: 16),
-                      ),
-                      Container(
-                        margin: const EdgeInsets.only(top: 8),
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: _getTimerColor().withOpacity(0.2),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: _getTimerColor()),
-                        ),
-                        child: Text(
-                          'Time: ${_remainingTime}s',
-                          style: TextStyle(
-                            color: _getTimerColor(),
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
-                ),
 
-                // Player name display
-                Positioned(
-                  top: 100,
-                  left: 12,
-                  child: FutureBuilder<String>(
-                    future: _getPlayerName(),
-                    builder: (context, snapshot) {
-                      return Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: Colors.blue.withOpacity(0.3),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          'Player: ${snapshot.data ?? "Player"}',
+                  // Scores and Timer
+                  Positioned(
+                    top: 10,
+                    left: 12,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(
+                          'Score: $_score',
                           style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 14,
+                              color: Colors.white70, fontSize: 18),
+                        ),
+                        Text(
+                          'High Score: $_highScore',
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 16),
+                        ),
+                        Container(
+                          margin: const EdgeInsets.only(top: 8),
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: _getTimerColor().withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: _getTimerColor()),
                           ),
+                          child: Text(
+                            'Time: ${_remainingTime}s',
+                            style: TextStyle(
+                              color: _getTimerColor(),
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        // NEW: Combo display
+                        if (_combo > 0)
+                          Container(
+                            margin: const EdgeInsets.only(top: 8),
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: _getComboColor().withOpacity(0.3),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: _getComboColor(), width: 2),
+                            ),
+                            child: Text(
+                              'COMBO x$_combo',
+                              style: TextStyle(
+                                color: _getComboColor(),
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+
+                  // Player name display
+                  Positioned(
+                    top: 100,
+                    left: 12,
+                    child: FutureBuilder<String>(
+                      future: _getPlayerName(),
+                      builder: (context, snapshot) {
+                        return Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.withOpacity(0.3),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            'Player: ${snapshot.data ?? "Player"}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+
+                  // Falling letters
+                  ..._letters.map<Widget>((_FallingLetter letter) {
+                    const double fontSize = 30;
+                    return Positioned(
+                      left: letter.x * screenW,
+                      top: letter.y * screenH,
+                      child: Text(
+                        letter.char,
+                        style: const TextStyle(
+                            fontSize: fontSize,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white),
+                      ),
+                    );
+                  }),
+
+                  // Bombs
+                  ..._bombs.map<Widget>((_Bomb bomb) {
+                    const double bombSize = 30.0;
+                    Color bombColor;
+                    switch (widget.difficulty) {
+                      case Difficulty.easy:
+                        bombColor = Colors.redAccent;
+                        break;
+                      case Difficulty.medium:
+                        bombColor = Colors.orangeAccent;
+                        break;
+                      case Difficulty.hard:
+                        bombColor = Colors.purpleAccent;
+                        break;
+                    }
+                    return Positioned(
+                      left: bomb.x * screenW,
+                      top: bomb.y * screenH,
+                      child: Icon(
+                        Icons.brightness_7,
+                        color: bombColor,
+                        size: bombSize,
+                      ),
+                    );
+                  }),
+
+                  // Bullets
+                  ..._bullets.map<Widget>((_Bullet bullet) {
+                    const double bulletSize = 8.0;
+                    return Positioned(
+                      left: bullet.x * screenW - bulletSize / 2,
+                      top: bullet.y * screenH,
+                      child: Container(
+                        width: bulletSize,
+                        height: bulletSize,
+                        decoration: const BoxDecoration(
+                          color: Colors.cyanAccent,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    );
+                  }),
+                  
+                  // NEW: Particles
+                  ..._particles.map<Widget>((_Particle p) {
+                    return Positioned(
+                      left: p.x * screenW,
+                      top: p.y * screenH,
+                      child: Opacity(
+                        opacity: p.life,
+                        child: Container(
+                          width: 4,
+                          height: 4,
+                          decoration: BoxDecoration(
+                            color: p.color,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+
+                  // Gun with recoil animation
+                  AnimatedBuilder(
+                    animation: _gunRecoilAnimation,
+                    builder: (context, child) {
+                      return Positioned(
+                        bottom: 20 + _gunRecoilAnimation.value,
+                        left: (_gunX * screenW) - (_gunWidthNorm * screenW / 2),
+                        child: Container(
+                          width: _gunWidthNorm * screenW,
+                          height: _gunHeightPx,
+                          decoration: BoxDecoration(
+                            color: Colors.blueAccent,
+                            borderRadius: BorderRadius.circular(6),
+                            boxShadow: const <BoxShadow>[
+                              BoxShadow(
+                                color: Colors.blue,
+                                blurRadius: 8,
+                                spreadRadius: 1,
+                              )
+                            ],
+                          ),
+                          child: const Center(
+                              child: Text(
+                            'GUN',
+                            style: TextStyle(
+                                color: Colors.white, fontWeight: FontWeight.bold),
+                          )),
                         ),
                       );
                     },
                   ),
-                ),
-
-                // Falling letters
-                ..._letters.map<Widget>((_FallingLetter letter) {
-                  const double fontSize = 30;
-                  return Positioned(
-                    left: letter.x * screenW,
-                    top: letter.y * screenH,
-                    child: Text(
-                      letter.char,
-                      style: const TextStyle(
-                          fontSize: fontSize,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white),
-                    ),
-                  );
-                }),
-
-                // Bombs
-                ..._bombs.map<Widget>((_Bomb bomb) {
-                  const double bombSize = 30.0;
-                  Color bombColor;
-                  switch (widget.difficulty) {
-                    case Difficulty.easy:
-                      bombColor = Colors.redAccent;
-                      break;
-                    case Difficulty.medium:
-                      bombColor = Colors.orangeAccent;
-                      break;
-                    case Difficulty.hard:
-                      bombColor = Colors.purpleAccent;
-                      break;
-                  }
-                  return Positioned(
-                    left: bomb.x * screenW,
-                    top: bomb.y * screenH,
-                    child: Icon(
-                      Icons.brightness_7,
-                      color: bombColor,
-                      size: bombSize,
-                    ),
-                  );
-                }),
-
-                // Bullets
-                ..._bullets.map<Widget>((_Bullet bullet) {
-                  const double bulletSize = 8.0;
-                  return Positioned(
-                    left: bullet.x * screenW - bulletSize / 2,
-                    top: bullet.y * screenH,
-                    child: Container(
-                      width: bulletSize,
-                      height: bulletSize,
-                      decoration: const BoxDecoration(
-                        color: Colors.cyanAccent,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                  );
-                }),
-
-                // Gun
-                Positioned(
-                  bottom: 20,
-                  left: (_gunX * screenW) - (_gunWidthNorm * screenW / 2),
-                  child: Container(
-                    width: _gunWidthNorm * screenW,
-                    height: _gunHeightPx,
-                    decoration: BoxDecoration(
-                      color: Colors.blueAccent,
-                      borderRadius: BorderRadius.circular(6),
-                      boxShadow: const <BoxShadow>[
-                        BoxShadow(
-                          color: Colors.blue,
-                          blurRadius: 8,
-                          spreadRadius: 1,
-                        )
-                      ],
-                    ),
-                    child: const Center(
-                        child: Text(
-                      'GUN',
-                      style: TextStyle(
-                          color: Colors.white, fontWeight: FontWeight.bold),
-                    )),
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
@@ -1375,8 +1569,27 @@ class _Star {
   });
 }
 
+// NEW: Particle class for explosion effects
+class _Particle {
+  double x;
+  double y;
+  double vx;
+  double vy;
+  Color color;
+  double life;
+
+  _Particle({
+    required this.x,
+    required this.y,
+    required this.vx,
+    required this.vy,
+    required this.color,
+    required this.life,
+  });
+}
+
 // -------------
-// 4. Profile Screen with saving functionality
+// 4. Profile Screen
 // -------------
 
 class ProfileScreen extends StatefulWidget {
@@ -1411,7 +1624,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<void> _saveName() async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     
-    await prefs.setString('username', _nameController.text.trim());
     await prefs.setString('currentPlayerName', _nameController.text.trim());
     
     if (mounted) {
@@ -1442,7 +1654,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-            // Current player info
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
@@ -1467,7 +1678,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
             const SizedBox(height: 30),
             
-            // Name input
             const Text(
               'Change Player Name:',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
@@ -1655,7 +1865,176 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
 }
 
 // -------------
-// 6. Settings Screen
+// 6. NEW: Statistics Screen
+// -------------
+
+class StatisticsScreen extends StatefulWidget {
+  const StatisticsScreen({super.key});
+
+  @override
+  State<StatisticsScreen> createState() => _StatisticsScreenState();
+}
+
+class _StatisticsScreenState extends State<StatisticsScreen> {
+  int _totalWordsCompleted = 0;
+  int _totalBulletsFired = 0;
+  int _totalLettersHit = 0;
+  int _maxCombo = 0;
+  double _accuracy = 0.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadStatistics();
+  }
+
+  Future<void> _loadStatistics() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        _totalWordsCompleted = prefs.getInt('totalWordsCompleted') ?? 0;
+        _totalBulletsFired = prefs.getInt('totalBulletsFired') ?? 0;
+        _totalLettersHit = prefs.getInt('totalLettersHit') ?? 0;
+        _maxCombo = prefs.getInt('maxCombo') ?? 0;
+        
+        if (_totalBulletsFired > 0) {
+          _accuracy = (_totalLettersHit / _totalBulletsFired) * 100;
+        }
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Statistics'),
+        backgroundColor: Colors.teal,
+      ),
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Colors.teal.shade700,
+              Colors.teal.shade900,
+            ],
+          ),
+        ),
+        child: ListView(
+          padding: const EdgeInsets.all(20),
+          children: [
+            const Icon(
+              Icons.bar_chart,
+              size: 60,
+              color: Colors.white,
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              'YOUR STATS',
+              style: TextStyle(
+                fontSize: 28,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 30),
+            
+            _buildStatCard(
+              'Words Completed',
+              _totalWordsCompleted.toString(),
+              Icons.check_circle,
+              Colors.green,
+            ),
+            _buildStatCard(
+              'Total Bullets Fired',
+              _totalBulletsFired.toString(),
+              Icons.radio_button_checked,
+              Colors.cyan,
+            ),
+            _buildStatCard(
+              'Letters Hit',
+              _totalLettersHit.toString(),
+              Icons.stars,
+              Colors.yellow,
+            ),
+            _buildStatCard(
+              'Accuracy',
+              '${_accuracy.toStringAsFixed(1)}%',
+              Icons.gps_fixed,
+              Colors.orange,
+            ),
+            _buildStatCard(
+              'Max Combo',
+              'x$_maxCombo',
+              Icons.trending_up,
+              Colors.purple,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatCard(String label, String value, IconData icon, Color color) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(15),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.2),
+            blurRadius: 8,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, color: color, size: 30),
+          ),
+          const SizedBox(width: 20),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  value,
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: color,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// -------------
+// 7. Settings Screen
 // -------------
 
 class SettingsScreen extends StatefulWidget {
@@ -1704,9 +2083,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
         children: <Widget>[
           SwitchListTile(
             title: const Text('Sound Effects'),
+            subtitle: const Text('Enable/disable game sounds'),
             value: _soundOn,
             onChanged: _toggleSound,
             secondary: Icon(_soundOn ? Icons.volume_up : Icons.volume_off),
+          ),
+          const SizedBox(height: 20),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              'Note: Sound effects will be implemented with the audioplayers package. This setting prepares for future audio integration.',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.grey,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
           ),
         ],
       ),
@@ -1715,7 +2107,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 }
 
 // -------------
-// 7. About Screen
+// 8. About Screen
 // -------------
 
 class AboutScreen extends StatelessWidget {
@@ -1727,11 +2119,11 @@ class AboutScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('About'),
       ),
-      body: const Padding(
-        padding: EdgeInsets.all(24),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
+          children: const <Widget>[
             Text(
               'Word War\n',
               style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
@@ -1743,7 +2135,8 @@ class AboutScreen extends StatelessWidget {
               '• Complete words in the correct sequence\n'
               '• Avoid hitting bombs!\n'
               '• Each completed word increases your score\n'
-              '• Beat the timer for each difficulty level\n\n'
+              '• Beat the timer for each difficulty level\n'
+              '• Build combos by hitting consecutive correct letters\n\n'
               'Controls:\n'
               '• Drag horizontally to move the gun\n'
               '• Tap to shoot\n'
@@ -1753,6 +2146,13 @@ class AboutScreen extends StatelessWidget {
               '• Easy: 3 minutes, fewer bombs\n'
               '• Medium: 2 minutes, more bombs\n'
               '• Hard: 1:30 minutes, many bombs\n\n'
+              'Features:\n'
+              '• Particle explosion effects\n'
+              '• Combo system with color-coded feedback\n'
+              '• Screen shake on bomb hits\n'
+              '• Gun recoil animation\n'
+              '• Comprehensive statistics tracking\n'
+              '• Personal profile with high scores\n\n'
               'Good luck and have fun!',
               style: TextStyle(fontSize: 16),
             ),
